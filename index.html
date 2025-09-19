@@ -1,34 +1,42 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ko">
 <head>
   <meta charset="UTF-8" />
-  <title>Mini Racing Challenge</title>
+  <title>미니 레이싱 챌린지</title>
   <style>
     html, body {
       margin: 0;
       height: 100%;
-      background: #111;
+      background: linear-gradient(135deg, #2f7d32, #1b5e20);
       font-family: 'Segoe UI', sans-serif;
       color: #eee;
       display: flex;
-      align-items: center;
       justify-content: center;
+      align-items: flex-start;
     }
     .wrapper {
-      text-align: center;
+      width: 100%;
+      max-width: 560px;
+      padding: 16px 0 32px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
     }
     canvas {
       background: #1b1b1b;
       border: 4px solid #555;
       border-radius: 12px;
       box-shadow: 0 0 30px rgba(0, 0, 0, 0.6);
+      width: 100%;
+      height: auto;
+      touch-action: none;
     }
     .hud {
-      margin-top: 16px;
       font-size: 18px;
+      text-align: center;
     }
     button {
-      margin-top: 12px;
       padding: 10px 18px;
       border: none;
       border-radius: 8px;
@@ -44,9 +52,11 @@
       background: #ffc926;
     }
     .instructions {
-      margin-top: 8px;
       font-size: 14px;
-      color: #aaa;
+      color: #e0e0e0;
+      line-height: 1.5;
+      text-align: center;
+      padding: 0 16px;
     }
   </style>
 </head>
@@ -54,11 +64,12 @@
   <div class="wrapper">
     <canvas id="game" width="480" height="640"></canvas>
     <div class="hud">
-      <span id="score">Score: 0 | Missiles: 5 | Bumper: 0/5</span>
+      <span id="score">점수: 0 | 미사일: 5 | 범퍼: 0/5</span>
     </div>
-    <button id="restart" hidden>Restart</button>
+    <button id="restart" hidden>다시 시작</button>
     <div class="instructions">
-      Arrow keys or drag to drive. Space or a second tap fires missiles. Yellow crates +1 missile; blue bumpers boost shields (5 levels).
+      화살표 키 또는 드래그로 운전하세요. 스페이스바나 두 번째 터치로 미사일을 발사할 수 있습니다.<br />
+      노란 상자는 미사일을 +1, 파란 범퍼는 방어력을 최대 5단계까지 강화해 줍니다.
     </div>
   </div>
   <script>
@@ -95,9 +106,14 @@
         maxY: canvas.height - player.height - 30
       };
 
+      const trafficProfiles = [
+        { color: '#f44336', detail: '#ffcdd2', minSpeed: 2.5, maxSpeed: 4.2, score: 100 },
+        { color: '#ff9800', detail: '#ffe0b2', minSpeed: 3.5, maxSpeed: 5.2, score: 130 },
+        { color: '#29b6f6', detail: '#b3e5fc', minSpeed: 4.2, maxSpeed: 6.4, score: 170 },
+        { color: '#ab47bc', detail: '#e1bee7', minSpeed: 4.8, maxSpeed: 7.2, score: 210 }
+      ];
+
       const traffic = [];
-      const trafficColors = ['#f44336', '#29b6f6', '#ff9800', '#ab47bc'];
-      const trafficDetailColors = ['#ffcdd2', '#b3e5fc', '#ffe0b2', '#e1bee7'];
       const scenery = [];
       const sceneryColors = ['#2e7d32', '#388e3c', '#1b5e20', '#43a047'];
       const laneDashPattern = [60, 35];
@@ -109,6 +125,8 @@
       const missiles = [];
       const explosions = [];
       const pickups = [];
+      const scorePopups = [];
+
       const maxMissiles = 5;
       let ammo = maxMissiles;
       let missileCooldown = 0;
@@ -142,12 +160,21 @@
       const restartButton = document.getElementById('restart');
       const scoreLabel = document.getElementById('score');
 
+      const bumperStyles = [
+        null,
+        { base: 'rgba(129, 212, 250, 0.55)', edge: 'rgba(1, 87, 155, 0.7)', glow: 'rgba(227, 242, 253, 0.5)', extension: 16, widthFactor: 0.62 },
+        { base: 'rgba(100, 181, 246, 0.65)', edge: 'rgba(21, 101, 192, 0.8)', glow: 'rgba(187, 222, 251, 0.6)', extension: 22, widthFactor: 0.7 },
+        { base: 'rgba(79, 195, 247, 0.7)', edge: 'rgba(2, 136, 209, 0.85)', glow: 'rgba(225, 245, 254, 0.7)', extension: 28, widthFactor: 0.78 },
+        { base: 'rgba(38, 198, 218, 0.75)', edge: 'rgba(0, 131, 143, 0.9)', glow: 'rgba(178, 235, 242, 0.75)', extension: 32, widthFactor: 0.86 },
+        { base: 'rgba(3, 169, 244, 0.85)', edge: 'rgba(1, 87, 155, 1.0)', glow: 'rgba(224, 247, 250, 0.85)', extension: 40, widthFactor: 0.98 }
+      ];
+
       function laneCenter(lane) {
         return road.x + lane * road.laneWidth + road.laneWidth / 2;
       }
 
       function updateHud() {
-        scoreLabel.textContent = 'Score: ' + Math.floor(score) + ' | Missiles: ' + ammo + ' | Bumper: ' + player.bumperLevel + '/' + player.maxBumperLevel;
+        scoreLabel.textContent = '점수: ' + Math.floor(score) + ' | 미사일: ' + ammo + ' | 범퍼: ' + player.bumperLevel + '/' + player.maxBumperLevel;
       }
 
       function configureSceneryItem(item, y) {
@@ -188,6 +215,7 @@
         missiles.length = 0;
         explosions.length = 0;
         pickups.length = 0;
+        scorePopups.length = 0;
         initScenery();
         player.x = laneCenter(1) - player.width / 2;
         player.y = player.startY;
@@ -209,23 +237,25 @@
         running = true;
         score = 0;
         updateHud();
+        resizeCanvasDisplay();
         restartButton.hidden = true;
         window.requestAnimationFrame(loop);
       }
 
       function spawnTraffic() {
         const lane = Math.floor(Math.random() * road.laneCount);
+        const profile = trafficProfiles[Math.floor(Math.random() * trafficProfiles.length)];
         const carWidth = 50;
         const carHeight = 98;
-        const colorIndex = Math.floor(Math.random() * trafficColors.length);
         traffic.push({
           x: laneCenter(lane) - carWidth / 2,
           y: -carHeight,
           width: carWidth,
           height: carHeight,
-          color: trafficColors[colorIndex],
-          detailColor: trafficDetailColors[colorIndex],
-          speed: 2.5 + Math.random() * 5
+          color: profile.color,
+          detailColor: profile.detail,
+          speed: profile.minSpeed + Math.random() * (profile.maxSpeed - profile.minSpeed),
+          scoreValue: profile.score
         });
       }
 
@@ -267,6 +297,16 @@
           maxRadius: 64,
           duration: 420,
           totalDuration: 420
+        });
+      }
+
+      function addScorePopup(x, y, value) {
+        scorePopups.push({
+          x: x,
+          y: y,
+          text: '+' + value,
+          duration: 720,
+          totalDuration: 720
         });
       }
 
@@ -358,7 +398,7 @@
           car.y += (gameSpeed + car.speed) * deltaFactor;
           if (car.y > canvas.height + car.height) {
             traffic.splice(i, 1);
-            score += 50;
+            score += Math.floor(car.scoreValue * 0.3);
           }
         }
 
@@ -422,8 +462,9 @@
             ) {
               traffic.splice(j, 1);
               missiles.splice(i, 1);
-              score += 150;
+              score += car.scoreValue;
               addExplosion(car.x + car.width / 2, car.y + car.height / 2);
+              addScorePopup(car.x + car.width / 2, car.y + car.height / 2 - 10, car.scoreValue);
               hit = true;
               break;
             }
@@ -441,6 +482,15 @@
           }
         }
 
+        for (let i = scorePopups.length - 1; i >= 0; i -= 1) {
+          const popup = scorePopups[i];
+          popup.duration -= delta;
+          popup.y -= delta * 0.03;
+          if (popup.duration <= 0) {
+            scorePopups.splice(i, 1);
+          }
+        }
+
         for (let i = traffic.length - 1; i >= 0; i -= 1) {
           const car = traffic[i];
           if (
@@ -452,8 +502,9 @@
             if (player.bumperLevel > 0) {
               player.bumperLevel -= 1;
               traffic.splice(i, 1);
-              score += 80;
+              score += Math.floor(car.scoreValue * 0.6);
               addExplosion(car.x + car.width / 2, car.y + car.height / 2);
+              addScorePopup(car.x + car.width / 2, car.y + car.height / 2 - 10, Math.floor(car.scoreValue * 0.6));
               updateHud();
             } else {
               running = false;
@@ -511,33 +562,52 @@
           return;
         }
         const level = Math.min(car.bumperLevel, car.maxBumperLevel || 1);
-        const fraction = level / (car.maxBumperLevel || level);
-        const halfW = car.width / 2;
-        const halfH = car.height / 2;
-        const extension = 14 + fraction * 26;
-        const width = car.width * (0.55 + fraction * 0.3);
+        const style = bumperStyles[level];
+        if (!style) {
+          return;
+        }
 
-        ctx.fillStyle = 'rgba(129, 212, 250, 0.85)';
+        const halfH = car.height / 2;
+        const width = car.width * style.widthFactor;
+        const extension = style.extension;
+
+        ctx.fillStyle = style.base;
         ctx.beginPath();
-        ctx.moveTo(-width / 2, -halfH);
-        ctx.lineTo(-width * 0.32, -halfH - extension * 0.55);
-        ctx.lineTo(0, -halfH - extension);
-        ctx.lineTo(width * 0.32, -halfH - extension * 0.55);
-        ctx.lineTo(width / 2, -halfH);
+        ctx.moveTo(-width / 2, -halfH + 4);
+        ctx.quadraticCurveTo(-width * 0.3, -halfH - extension * 0.45, 0, -halfH - extension);
+        ctx.quadraticCurveTo(width * 0.3, -halfH - extension * 0.45, width / 2, -halfH + 4);
         ctx.closePath();
         ctx.fill();
 
-        ctx.strokeStyle = 'rgba(1, 87, 155, 0.85)';
+        ctx.strokeStyle = style.edge;
         ctx.lineWidth = 3;
         ctx.stroke();
 
-        ctx.fillStyle = 'rgba(227, 242, 253, 0.6)';
+        ctx.fillStyle = style.glow;
         ctx.beginPath();
-        ctx.moveTo(-width * 0.18, -halfH - extension * 0.54);
-        ctx.lineTo(0, -halfH - extension * 0.82);
-        ctx.lineTo(width * 0.18, -halfH - extension * 0.54);
+        ctx.moveTo(-width * 0.18, -halfH - extension * 0.4);
+        ctx.lineTo(0, -halfH - extension * 0.75);
+        ctx.lineTo(width * 0.18, -halfH - extension * 0.4);
         ctx.closePath();
         ctx.fill();
+
+        if (level >= 3) {
+          ctx.strokeStyle = 'rgba(224, 247, 250, 0.8)';
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          ctx.moveTo(-width / 2 + 6, -halfH + 8);
+          ctx.lineTo(-width * 0.22, -halfH - extension * 0.35);
+          ctx.moveTo(width / 2 - 6, -halfH + 8);
+          ctx.lineTo(width * 0.22, -halfH - extension * 0.35);
+          ctx.stroke();
+        }
+
+        if (level >= 5) {
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
+          ctx.beginPath();
+          ctx.arc(0, -halfH - extension * 0.6, width * 0.12, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
 
       function drawCar(car, angle, isPlayer) {
@@ -692,6 +762,16 @@
         }
       }
 
+      function drawScorePopups() {
+        for (const popup of scorePopups) {
+          const alpha = popup.duration / popup.totalDuration;
+          ctx.fillStyle = 'rgba(255, 255, 255, ' + Math.min(1, alpha) + ')';
+          ctx.font = 'bold 20px Segoe UI';
+          ctx.textAlign = 'center';
+          ctx.fillText(popup.text, popup.x, popup.y);
+        }
+      }
+
       function render() {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.fillStyle = '#151515';
@@ -711,6 +791,7 @@
         drawMissiles();
         drawCar(player, player.angle, true);
         drawExplosions();
+        drawScorePopups();
 
         if (!running) {
           ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
@@ -718,10 +799,10 @@
           ctx.fillStyle = '#ffffff';
           ctx.font = 'bold 42px sans-serif';
           ctx.textAlign = 'center';
-          ctx.fillText('Crash!', canvas.width / 2, canvas.height / 2 - 20);
+          ctx.fillText('충돌!', canvas.width / 2, canvas.height / 2 - 20);
           ctx.font = '20px sans-serif';
-          ctx.fillText('Score: ' + Math.floor(score), canvas.width / 2, canvas.height / 2 + 15);
-          ctx.fillText('Press restart or hit Space to try again', canvas.width / 2, canvas.height / 2 + 50);
+          ctx.fillText('점수: ' + Math.floor(score), canvas.width / 2, canvas.height / 2 + 15);
+          ctx.fillText('다시 시작을 누르거나 스페이스바로 재도전하세요', canvas.width / 2, canvas.height / 2 + 50);
         }
       }
 
@@ -808,16 +889,8 @@
             clampPlayerPosition();
             const moveX = pos.x - touchState.prevX;
             const moveY = pos.y - touchState.prevY;
-            if (Math.abs(moveX) > 2) {
-              touchState.lateralDirection = moveX > 0 ? 1 : -1;
-            } else {
-              touchState.lateralDirection = 0;
-            }
-            if (Math.abs(moveY) > 2) {
-              touchState.verticalDirection = moveY > 0 ? 1 : -1;
-            } else {
-              touchState.verticalDirection = 0;
-            }
+            touchState.lateralDirection = Math.abs(moveX) > 2 ? (moveX > 0 ? 1 : -1) : 0;
+            touchState.verticalDirection = Math.abs(moveY) > 2 ? (moveY > 0 ? 1 : -1) : 0;
             touchState.prevX = pos.x;
             touchState.prevY = pos.y;
             break;
@@ -841,11 +914,23 @@
         }
       }, { passive: false });
 
+      function resizeCanvasDisplay() {
+        const scale = Math.min(window.innerWidth / canvas.width, window.innerHeight / canvas.height);
+        const displayWidth = canvas.width * scale;
+        const displayHeight = canvas.height * scale;
+        canvas.style.width = displayWidth + 'px';
+        canvas.style.height = displayHeight + 'px';
+      }
+
+      window.addEventListener('resize', resizeCanvasDisplay);
+      window.addEventListener('orientationchange', resizeCanvasDisplay);
+
       restartButton.addEventListener('click', resetGame);
 
       player.x = laneCenter(1) - player.width / 2;
       initScenery();
       updateHud();
+      resizeCanvasDisplay();
 
       window.requestAnimationFrame(function (time) {
         lastTime = time;
