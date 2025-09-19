@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Mini Racing Challenge</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #111;
+      font-family: 'Segoe UI', sans-serif;
+      color: #eee;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .wrapper {
+      text-align: center;
+    }
+    canvas {
+      background: #1b1b1b;
+      border: 4px solid #555;
+      border-radius: 12px;
+      box-shadow: 0 0 30px rgba(0, 0, 0, 0.6);
+    }
+    .hud {
+      margin-top: 16px;
+      font-size: 18px;
+    }
+    button {
+      margin-top: 12px;
+      padding: 10px 18px;
+      border: none;
+      border-radius: 8px;
+      background: #ffb400;
+      color: #222;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    button:focus {
+      outline: none;
+    }
+    button:hover {
+      background: #ffc926;
+    }
+    .instructions {
+      margin-top: 8px;
+      font-size: 14px;
+      color: #aaa;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <canvas id="game" width="480" height="640"></canvas>
+    <div class="hud">
+      <span id="score">Score: 0 | Missiles: 5 | Bumper: 0/5</span>
+    </div>
+    <button id="restart" hidden>Restart</button>
+    <div class="instructions">
+      Arrow keys or drag to drive. Space or a second tap fires missiles. Yellow crates +1 missile; blue bumpers boost shields (5 levels).
+    </div>
+  </div>
+  <script>
+    (function () {
+      const canvas = document.getElementById('game');
+      const ctx = canvas.getContext('2d');
+
+      const road = {
+        width: canvas.width * 0.6,
+        x: canvas.width * 0.2,
+        laneCount: 3
+      };
+      road.laneWidth = road.width / road.laneCount;
+
+      const player = {
+        width: 50,
+        height: 98,
+        x: canvas.width / 2 - 25,
+        y: canvas.height - 130,
+        color: '#4caf50',
+        detailColor: '#a5d6a7',
+        speed: 8,
+        verticalSpeed: 6,
+        angle: 0,
+        angleTarget: 0,
+        maxAngle: 0.35,
+        bumperLevel: 0,
+        maxBumperLevel: 5
+      };
+      player.startY = player.y;
+
+      const playerBounds = {
+        minY: canvas.height * 0.26,
+        maxY: canvas.height - player.height - 30
+      };
+
+      const traffic = [];
+      const trafficColors = ['#f44336', '#29b6f6', '#ff9800', '#ab47bc'];
+      const trafficDetailColors = ['#ffcdd2', '#b3e5fc', '#ffe0b2', '#e1bee7'];
+      const scenery = [];
+      const sceneryColors = ['#2e7d32', '#388e3c', '#1b5e20', '#43a047'];
+      const laneDashPattern = [60, 35];
+      const lanePatternLength = laneDashPattern.reduce(function (sum, value) {
+        return sum + value;
+      }, 0);
+      let laneOffset = 0;
+
+      const missiles = [];
+      const explosions = [];
+      const pickups = [];
+      const maxMissiles = 5;
+      let ammo = maxMissiles;
+      let missileCooldown = 0;
+      const missileSpeed = 12;
+      let pickupTimer = 0;
+      let pickupInterval = 3200;
+
+      const touchState = {
+        activeId: null,
+        startX: 0,
+        startY: 0,
+        playerX: 0,
+        playerY: 0,
+        prevX: 0,
+        prevY: 0,
+        lateralDirection: 0,
+        verticalDirection: 0
+      };
+
+      let gameSpeed = 4;
+      const baseSpeed = 4.5;
+      const maxSpeed = 9;
+      let spawnTimer = 0;
+      let spawnInterval = 900;
+      let lastTime = performance.now();
+      let running = true;
+      let score = 0;
+
+      const keys = new Set();
+
+      const restartButton = document.getElementById('restart');
+      const scoreLabel = document.getElementById('score');
+
+      function laneCenter(lane) {
+        return road.x + lane * road.laneWidth + road.laneWidth / 2;
+      }
+
+      function updateHud() {
+        scoreLabel.textContent = 'Score: ' + Math.floor(score) + ' | Missiles: ' + ammo + ' | Bumper: ' + player.bumperLevel + '/' + player.maxBumperLevel;
+      }
+
+      function configureSceneryItem(item, y) {
+        const side = Math.random() < 0.5 ? 'left' : 'right';
+        const width = 28 + Math.random() * 26;
+        const height = 60 + Math.random() * 50;
+        const offset = 25 + Math.random() * 40;
+
+        item.width = width;
+        item.height = height;
+        item.side = side;
+        item.x = side === 'left'
+          ? road.x - offset - width
+          : road.x + road.width + offset;
+        item.speed = 1.4 + Math.random() * 3.6;
+        item.color = sceneryColors[Math.floor(Math.random() * sceneryColors.length)];
+        if (typeof y === 'number') {
+          item.y = y;
+        } else {
+          item.y = -height - Math.random() * 180;
+        }
+      }
+
+      function initScenery() {
+        scenery.length = 0;
+        const count = 12;
+        const spacing = canvas.height / 6;
+        const startY = -canvas.height;
+        for (let i = 0; i < count; i += 1) {
+          const item = {};
+          configureSceneryItem(item, startY + i * spacing);
+          scenery.push(item);
+        }
+      }
+
+      function resetGame() {
+        traffic.length = 0;
+        missiles.length = 0;
+        explosions.length = 0;
+        pickups.length = 0;
+        initScenery();
+        player.x = laneCenter(1) - player.width / 2;
+        player.y = player.startY;
+        player.angle = 0;
+        player.angleTarget = 0;
+        player.bumperLevel = 0;
+        laneOffset = 0;
+        ammo = maxMissiles;
+        missileCooldown = 0;
+        pickupTimer = 0;
+        pickupInterval = 3200;
+        touchState.activeId = null;
+        touchState.lateralDirection = 0;
+        touchState.verticalDirection = 0;
+        gameSpeed = 4;
+        spawnTimer = 0;
+        spawnInterval = 900;
+        lastTime = performance.now();
+        running = true;
+        score = 0;
+        updateHud();
+        restartButton.hidden = true;
+        window.requestAnimationFrame(loop);
+      }
+
+      function spawnTraffic() {
+        const lane = Math.floor(Math.random() * road.laneCount);
+        const carWidth = 50;
+        const carHeight = 98;
+        const colorIndex = Math.floor(Math.random() * trafficColors.length);
+        traffic.push({
+          x: laneCenter(lane) - carWidth / 2,
+          y: -carHeight,
+          width: carWidth,
+          height: carHeight,
+          color: trafficColors[colorIndex],
+          detailColor: trafficDetailColors[colorIndex],
+          speed: 2.5 + Math.random() * 5
+        });
+      }
+
+      function spawnPickup() {
+        const lane = Math.floor(Math.random() * road.laneCount);
+        const size = 40;
+        const type = Math.random() < 0.55 ? 'missile' : 'bumper';
+        pickups.push({
+          x: laneCenter(lane) - size / 2,
+          y: -size * 2,
+          width: size,
+          height: size,
+          speed: 2 + Math.random() * 3,
+          type: type
+        });
+      }
+
+      function fireMissile() {
+        if (!running || ammo <= 0 || missileCooldown > 0) {
+          return;
+        }
+        missiles.push({
+          x: player.x + player.width / 2 - 3,
+          y: player.y - 14,
+          width: 6,
+          height: 20,
+          speed: missileSpeed
+        });
+        ammo -= 1;
+        missileCooldown = 220;
+        updateHud();
+      }
+
+      function addExplosion(x, y) {
+        explosions.push({
+          x: x,
+          y: y,
+          startRadius: 10,
+          maxRadius: 64,
+          duration: 420,
+          totalDuration: 420
+        });
+      }
+
+      function clampPlayerPosition() {
+        const minX = road.x + 10;
+        const maxX = road.x + road.width - player.width - 10;
+        player.x = Math.max(minX, Math.min(maxX, player.x));
+        player.y = Math.max(playerBounds.minY, Math.min(playerBounds.maxY, player.y));
+      }
+
+      function update(delta) {
+        missileCooldown = Math.max(0, missileCooldown - delta);
+
+        if (!running) {
+          updateHud();
+          return;
+        }
+
+        const deltaFactor = delta * 0.06;
+        const lateralStep = player.speed * deltaFactor * 1.1;
+        const verticalStep = player.verticalSpeed * deltaFactor * 1.1;
+        let turnDirection = 0;
+        const usingTouch = touchState.activeId !== null;
+
+        if (keys.has('ArrowUp')) {
+          gameSpeed = Math.min(gameSpeed + delta * 0.01, maxSpeed);
+          player.y -= verticalStep;
+        } else if (keys.has('ArrowDown')) {
+          gameSpeed = Math.max(gameSpeed - delta * 0.015, 2.5);
+          player.y += verticalStep;
+        } else {
+          if (gameSpeed < baseSpeed) {
+            gameSpeed = Math.min(baseSpeed, gameSpeed + delta * 0.01);
+          } else if (gameSpeed > baseSpeed) {
+            gameSpeed = Math.max(baseSpeed, gameSpeed - delta * 0.01);
+          }
+        }
+
+        if (keys.has('ArrowLeft')) {
+          player.x -= lateralStep;
+          turnDirection -= 1;
+        }
+        if (keys.has('ArrowRight')) {
+          player.x += lateralStep;
+          turnDirection += 1;
+        }
+
+        if (usingTouch) {
+          if (touchState.verticalDirection < 0) {
+            gameSpeed = Math.min(gameSpeed + delta * 0.01, maxSpeed);
+          } else if (touchState.verticalDirection > 0) {
+            gameSpeed = Math.max(gameSpeed - delta * 0.015, 2.5);
+          }
+
+          if (touchState.lateralDirection !== 0) {
+            turnDirection = touchState.lateralDirection;
+          }
+        }
+
+        if (turnDirection < 0) {
+          player.angleTarget = -player.maxAngle;
+        } else if (turnDirection > 0) {
+          player.angleTarget = player.maxAngle;
+        } else {
+          player.angleTarget = 0;
+        }
+        player.angle += (player.angleTarget - player.angle) * 0.15;
+
+        clampPlayerPosition();
+
+        laneOffset = (laneOffset + gameSpeed * deltaFactor * 1.25) % lanePatternLength;
+
+        spawnTimer += delta;
+        if (spawnTimer > spawnInterval) {
+          spawnTimer = 0;
+          spawnTraffic();
+          spawnInterval = Math.max(500, spawnInterval - 5);
+        }
+
+        pickupTimer += delta;
+        if (pickupTimer > pickupInterval) {
+          pickupTimer = 0;
+          spawnPickup();
+          pickupInterval = 2600 + Math.random() * 3600;
+        }
+
+        for (let i = traffic.length - 1; i >= 0; i -= 1) {
+          const car = traffic[i];
+          car.y += (gameSpeed + car.speed) * deltaFactor;
+          if (car.y > canvas.height + car.height) {
+            traffic.splice(i, 1);
+            score += 50;
+          }
+        }
+
+        for (const item of scenery) {
+          item.y += (gameSpeed + item.speed) * deltaFactor;
+          if (item.y - item.height > canvas.height + 60) {
+            configureSceneryItem(item);
+          }
+        }
+
+        for (let i = pickups.length - 1; i >= 0; i -= 1) {
+          const pickup = pickups[i];
+          pickup.y += (gameSpeed + pickup.speed) * deltaFactor;
+          if (pickup.y - pickup.height > canvas.height + 40) {
+            pickups.splice(i, 1);
+            continue;
+          }
+
+          if (
+            player.x < pickup.x + pickup.width &&
+            player.x + player.width > pickup.x &&
+            player.y < pickup.y + pickup.height &&
+            player.y + player.height > pickup.y
+          ) {
+            pickups.splice(i, 1);
+            if (pickup.type === 'missile') {
+              if (ammo < maxMissiles) {
+                ammo = Math.min(maxMissiles, ammo + 1);
+                score += 35;
+              } else {
+                score += 15;
+              }
+            } else if (pickup.type === 'bumper') {
+              if (player.bumperLevel < player.maxBumperLevel) {
+                player.bumperLevel += 1;
+                score += 60;
+              } else {
+                score += 20;
+              }
+            }
+            updateHud();
+          }
+        }
+
+        for (let i = missiles.length - 1; i >= 0; i -= 1) {
+          const missile = missiles[i];
+          missile.y -= (gameSpeed + missile.speed) * deltaFactor;
+          if (missile.y + missile.height < -40) {
+            missiles.splice(i, 1);
+            continue;
+          }
+
+          let hit = false;
+          for (let j = traffic.length - 1; j >= 0; j -= 1) {
+            const car = traffic[j];
+            if (
+              missile.x < car.x + car.width &&
+              missile.x + missile.width > car.x &&
+              missile.y < car.y + car.height &&
+              missile.y + missile.height > car.y
+            ) {
+              traffic.splice(j, 1);
+              missiles.splice(i, 1);
+              score += 150;
+              addExplosion(car.x + car.width / 2, car.y + car.height / 2);
+              hit = true;
+              break;
+            }
+          }
+          if (hit) {
+            continue;
+          }
+        }
+
+        for (let i = explosions.length - 1; i >= 0; i -= 1) {
+          const boom = explosions[i];
+          boom.duration -= delta;
+          if (boom.duration <= 0) {
+            explosions.splice(i, 1);
+          }
+        }
+
+        for (let i = traffic.length - 1; i >= 0; i -= 1) {
+          const car = traffic[i];
+          if (
+            player.x < car.x + car.width &&
+            player.x + player.width > car.x &&
+            player.y < car.y + car.height &&
+            player.y + player.height > car.y
+          ) {
+            if (player.bumperLevel > 0) {
+              player.bumperLevel -= 1;
+              traffic.splice(i, 1);
+              score += 80;
+              addExplosion(car.x + car.width / 2, car.y + car.height / 2);
+              updateHud();
+            } else {
+              running = false;
+              restartButton.hidden = false;
+            }
+          }
+        }
+
+        if (running) {
+          score += delta * 0.05;
+        }
+        updateHud();
+      }
+
+      function drawRoad() {
+        ctx.fillStyle = '#303030';
+        ctx.fillRect(road.x, 0, road.width, canvas.height);
+
+        ctx.strokeStyle = '#606060';
+        ctx.lineWidth = 4;
+        ctx.strokeRect(road.x + 2, 0, road.width - 4, canvas.height);
+
+        ctx.setLineDash(laneDashPattern);
+        ctx.lineDashOffset = -laneOffset;
+        ctx.strokeStyle = '#d9d9d9';
+        ctx.lineWidth = 6;
+        ctx.beginPath();
+        for (let lane = 1; lane < road.laneCount; lane += 1) {
+          const x = road.x + lane * road.laneWidth;
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, canvas.height);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.lineDashOffset = 0;
+      }
+
+      function drawRoundedRect(x, y, width, height, radius) {
+        const r = Math.min(radius, width / 2, height / 2);
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.lineTo(x + width - r, y);
+        ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+        ctx.lineTo(x + width, y + height - r);
+        ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+        ctx.lineTo(x + r, y + height);
+        ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+        ctx.lineTo(x, y + r);
+        ctx.quadraticCurveTo(x, y, x + r, y);
+        ctx.closePath();
+      }
+
+      function drawPlayerBumper(car) {
+        if (!car || (car.bumperLevel || 0) <= 0) {
+          return;
+        }
+        const level = Math.min(car.bumperLevel, car.maxBumperLevel || 1);
+        const fraction = level / (car.maxBumperLevel || level);
+        const halfW = car.width / 2;
+        const halfH = car.height / 2;
+        const extension = 14 + fraction * 26;
+        const width = car.width * (0.55 + fraction * 0.3);
+
+        ctx.fillStyle = 'rgba(129, 212, 250, 0.85)';
+        ctx.beginPath();
+        ctx.moveTo(-width / 2, -halfH);
+        ctx.lineTo(-width * 0.32, -halfH - extension * 0.55);
+        ctx.lineTo(0, -halfH - extension);
+        ctx.lineTo(width * 0.32, -halfH - extension * 0.55);
+        ctx.lineTo(width / 2, -halfH);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.strokeStyle = 'rgba(1, 87, 155, 0.85)';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        ctx.fillStyle = 'rgba(227, 242, 253, 0.6)';
+        ctx.beginPath();
+        ctx.moveTo(-width * 0.18, -halfH - extension * 0.54);
+        ctx.lineTo(0, -halfH - extension * 0.82);
+        ctx.lineTo(width * 0.18, -halfH - extension * 0.54);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      function drawCar(car, angle, isPlayer) {
+        ctx.save();
+        ctx.translate(car.x + car.width / 2, car.y + car.height / 2);
+        ctx.rotate(angle || 0);
+
+        const halfW = car.width / 2;
+        const halfH = car.height / 2;
+        const bodyColor = car.color;
+        const accentColor = car.detailColor || '#cfd8dc';
+
+        ctx.fillStyle = '#121212';
+        ctx.fillRect(-halfW - 6, -halfH + 12, 4, 24);
+        ctx.fillRect(halfW + 2, -halfH + 12, 4, 24);
+        ctx.fillRect(-halfW - 6, halfH - 36, 4, 24);
+        ctx.fillRect(halfW + 2, halfH - 36, 4, 24);
+
+        drawRoundedRect(-halfW, -halfH, car.width, car.height, 16);
+        ctx.fillStyle = bodyColor;
+        ctx.fill();
+
+        drawRoundedRect(-halfW + 8, -halfH + 20, car.width - 16, car.height - 40, 12);
+        ctx.fillStyle = accentColor;
+        ctx.fill();
+
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.65)';
+        drawRoundedRect(-halfW + 10, -halfH + 22, car.width - 20, car.height / 3, 10);
+        ctx.fill();
+
+        ctx.fillStyle = '#ffeb3b';
+        ctx.fillRect(-halfW + 6, -halfH + 4, 12, 6);
+        ctx.fillRect(halfW - 18, -halfH + 4, 12, 6);
+
+        ctx.fillStyle = '#ff7043';
+        ctx.fillRect(-halfW + 8, halfH - 10, 12, 6);
+        ctx.fillRect(halfW - 20, halfH - 10, 12, 6);
+
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+        ctx.beginPath();
+        ctx.ellipse(0, halfH - 14, car.width / 2.5, 8, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (isPlayer) {
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+          ctx.beginPath();
+          ctx.moveTo(-halfW + 14, -halfH + 22);
+          ctx.lineTo(0, -halfH);
+          ctx.lineTo(halfW - 14, -halfH + 22);
+          ctx.closePath();
+          ctx.fill();
+
+          drawPlayerBumper(car);
+        }
+
+        ctx.restore();
+      }
+
+      function drawScenery() {
+        for (const item of scenery) {
+          const trunkHeight = item.height * 0.45;
+          const trunkWidth = Math.max(6, item.width * 0.3);
+          const trunkX = item.x + item.width / 2 - trunkWidth / 2;
+          const trunkY = item.y + item.height - trunkHeight;
+
+          ctx.fillStyle = '#5d4037';
+          ctx.fillRect(trunkX, trunkY, trunkWidth, trunkHeight);
+
+          ctx.fillStyle = item.color;
+          ctx.beginPath();
+          ctx.ellipse(
+            item.x + item.width / 2,
+            item.y + item.height / 2,
+            item.width / 2,
+            item.height / 2,
+            0,
+            0,
+            Math.PI * 2
+          );
+          ctx.fill();
+        }
+      }
+
+      function drawPickups() {
+        for (const pickup of pickups) {
+          ctx.save();
+          ctx.translate(pickup.x + pickup.width / 2, pickup.y + pickup.height / 2);
+          drawRoundedRect(-pickup.width / 2, -pickup.height / 2, pickup.width, pickup.height, 14);
+          if (pickup.type === 'missile') {
+            ctx.fillStyle = '#ffca28';
+            ctx.fill();
+            ctx.strokeStyle = '#f57c00';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+
+            ctx.fillStyle = '#f57c00';
+            ctx.fillRect(-4, -pickup.height / 2 + 6, 8, pickup.height - 12);
+            ctx.fillRect(-pickup.width / 2 + 10, -2, pickup.width - 20, 4);
+
+            ctx.fillStyle = '#fff3e0';
+            ctx.fillRect(-pickup.width / 2 + 12, -pickup.height / 2 + 10, pickup.width - 24, 6);
+          } else {
+            ctx.fillStyle = '#4fc3f7';
+            ctx.fill();
+            ctx.strokeStyle = '#0277bd';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+
+            ctx.fillStyle = '#e1f5fe';
+            ctx.beginPath();
+            ctx.arc(0, 0, pickup.width / 3, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.strokeStyle = '#01579b';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(-pickup.width / 3, 0);
+            ctx.lineTo(pickup.width / 3, 0);
+            ctx.moveTo(0, -pickup.height / 3);
+            ctx.lineTo(0, pickup.height / 3);
+            ctx.stroke();
+          }
+          ctx.restore();
+        }
+      }
+
+      function drawMissiles() {
+        for (const missile of missiles) {
+          ctx.fillStyle = '#ffeb3b';
+          ctx.fillRect(missile.x, missile.y, missile.width, missile.height);
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(missile.x + 1, missile.y + 2, missile.width - 2, missile.height - 6);
+          ctx.fillStyle = '#ff5722';
+          ctx.fillRect(missile.x, missile.y + missile.height - 4, missile.width, 4);
+        }
+      }
+
+      function drawExplosions() {
+        for (const boom of explosions) {
+          const progress = 1 - boom.duration / boom.totalDuration;
+          const radius = boom.startRadius + (boom.maxRadius - boom.startRadius) * progress;
+          const alpha = Math.max(0, 1 - progress);
+          const gradient = ctx.createRadialGradient(boom.x, boom.y, radius * 0.1, boom.x, boom.y, radius);
+          gradient.addColorStop(0, 'rgba(255, 255, 255, ' + alpha + ')');
+          gradient.addColorStop(0.35, 'rgba(255, 204, 0, ' + alpha * 0.9 + ')');
+          gradient.addColorStop(0.7, 'rgba(255, 87, 34, ' + alpha * 0.6 + ')');
+          gradient.addColorStop(1, 'rgba(33, 33, 33, 0)');
+          ctx.fillStyle = gradient;
+          ctx.beginPath();
+          ctx.arc(boom.x, boom.y, radius, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      function render() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#151515';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        drawRoad();
+
+        ctx.fillStyle = '#2e7d32';
+        ctx.fillRect(0, 0, road.x, canvas.height);
+        ctx.fillRect(road.x + road.width, 0, road.x, canvas.height);
+
+        drawScenery();
+        drawPickups();
+        traffic.forEach(function (car) {
+          drawCar(car, 0, false);
+        });
+        drawMissiles();
+        drawCar(player, player.angle, true);
+        drawExplosions();
+
+        if (!running) {
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = '#ffffff';
+          ctx.font = 'bold 42px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText('Crash!', canvas.width / 2, canvas.height / 2 - 20);
+          ctx.font = '20px sans-serif';
+          ctx.fillText('Score: ' + Math.floor(score), canvas.width / 2, canvas.height / 2 + 15);
+          ctx.fillText('Press restart or hit Space to try again', canvas.width / 2, canvas.height / 2 + 50);
+        }
+      }
+
+      function loop(timestamp) {
+        const delta = timestamp - lastTime;
+        lastTime = timestamp;
+        update(delta);
+        render();
+        if (running) {
+          window.requestAnimationFrame(loop);
+        }
+      }
+
+      document.addEventListener('keydown', function (event) {
+        if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(event.code)) {
+          event.preventDefault();
+        }
+        keys.add(event.code);
+        if (!running && event.code === 'Space') {
+          resetGame();
+        } else if (running && event.code === 'Space') {
+          fireMissile();
+        }
+      });
+
+      document.addEventListener('keyup', function (event) {
+        keys.delete(event.code);
+      });
+
+      function getCanvasPosition(touch) {
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        return {
+          x: (touch.clientX - rect.left) * scaleX,
+          y: (touch.clientY - rect.top) * scaleY
+        };
+      }
+
+      function handlePrimaryTouchEnd(identifier) {
+        if (touchState.activeId === identifier) {
+          touchState.activeId = null;
+          touchState.lateralDirection = 0;
+          touchState.verticalDirection = 0;
+        }
+      }
+
+      canvas.addEventListener('touchstart', function (event) {
+        event.preventDefault();
+        const changed = event.changedTouches;
+        for (let i = 0; i < changed.length; i += 1) {
+          const touch = changed[i];
+          const pos = getCanvasPosition(touch);
+          if (touchState.activeId === null) {
+            touchState.activeId = touch.identifier;
+            touchState.startX = pos.x;
+            touchState.startY = pos.y;
+            touchState.playerX = player.x;
+            touchState.playerY = player.y;
+            touchState.prevX = pos.x;
+            touchState.prevY = pos.y;
+            touchState.lateralDirection = 0;
+            touchState.verticalDirection = 0;
+          } else {
+            fireMissile();
+          }
+        }
+      }, { passive: false });
+
+      canvas.addEventListener('touchmove', function (event) {
+        if (touchState.activeId === null) {
+          return;
+        }
+        event.preventDefault();
+        const changed = event.changedTouches;
+        for (let i = 0; i < changed.length; i += 1) {
+          const touch = changed[i];
+          if (touch.identifier === touchState.activeId) {
+            const pos = getCanvasPosition(touch);
+            const dx = pos.x - touchState.startX;
+            const dy = pos.y - touchState.startY;
+            player.x = touchState.playerX + dx;
+            player.y = touchState.playerY + dy;
+            clampPlayerPosition();
+            const moveX = pos.x - touchState.prevX;
+            const moveY = pos.y - touchState.prevY;
+            if (Math.abs(moveX) > 2) {
+              touchState.lateralDirection = moveX > 0 ? 1 : -1;
+            } else {
+              touchState.lateralDirection = 0;
+            }
+            if (Math.abs(moveY) > 2) {
+              touchState.verticalDirection = moveY > 0 ? 1 : -1;
+            } else {
+              touchState.verticalDirection = 0;
+            }
+            touchState.prevX = pos.x;
+            touchState.prevY = pos.y;
+            break;
+          }
+        }
+      }, { passive: false });
+
+      canvas.addEventListener('touchend', function (event) {
+        event.preventDefault();
+        const changed = event.changedTouches;
+        for (let i = 0; i < changed.length; i += 1) {
+          handlePrimaryTouchEnd(changed[i].identifier);
+        }
+      }, { passive: false });
+
+      canvas.addEventListener('touchcancel', function (event) {
+        event.preventDefault();
+        const changed = event.changedTouches;
+        for (let i = 0; i < changed.length; i += 1) {
+          handlePrimaryTouchEnd(changed[i].identifier);
+        }
+      }, { passive: false });
+
+      restartButton.addEventListener('click', resetGame);
+
+      player.x = laneCenter(1) - player.width / 2;
+      initScenery();
+      updateHud();
+
+      window.requestAnimationFrame(function (time) {
+        lastTime = time;
+        loop(time);
+      });
+    }());
+  </script>
+</body>
+</html>
