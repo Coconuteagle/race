@@ -6,18 +6,18 @@
   <style>
     html, body {
       margin: 0;
-      height: 100%;
+      min-height: 100%;
       background: linear-gradient(135deg, #2f7d32, #1b5e20);
       font-family: 'Segoe UI', sans-serif;
       color: #eee;
       display: flex;
-      justify-content: center;
-      align-items: flex-start;
+      flex-direction: column;
+      align-items: center;
     }
     .wrapper {
       width: 100%;
       max-width: 560px;
-      padding: 16px 0 32px;
+      padding: 16px 0 24px;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -58,6 +58,59 @@
       text-align: center;
       padding: 0 16px;
     }
+    .touch-panel {
+      width: 100%;
+      max-width: 560px;
+      flex: 1 1 auto;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      padding: 18px 16px 32px;
+      box-sizing: border-box;
+      gap: 8px;
+    }
+    .touch-panel__zone {
+      width: 100%;
+      flex: 1 1 auto;
+      min-height: 140px;
+      background: rgba(37, 155, 36, 0.45);
+      border: 2px dashed rgba(255, 255, 255, 0.6);
+      border-radius: 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      color: #f4f4f4;
+      text-align: center;
+      padding: 18px;
+      backdrop-filter: blur(2px);
+      position: relative;
+      animation: pulseZone 4s ease-in-out infinite;
+    }
+    .touch-panel__zone::after {
+      content: '';
+      position: absolute;
+      inset: 12px;
+      border-radius: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      pointer-events: none;
+    }
+    .touch-panel__title {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      margin-bottom: 6px;
+    }
+    .touch-panel__hint {
+      font-size: 15px;
+      line-height: 1.6;
+      color: #e8f5e9;
+    }
+    @keyframes pulseZone {
+      0%, 100% { box-shadow: 0 0 20px rgba(76, 175, 80, 0.35); }
+      50% { box-shadow: 0 0 30px rgba(129, 199, 132, 0.55); }
+    }
   </style>
 </head>
 <body>
@@ -72,10 +125,20 @@
       노란 상자는 미사일을 +1, 파란 범퍼는 방어력을 최대 5단계까지 강화해 줍니다.
     </div>
   </div>
+  <div class="touch-panel" id="touchPanel">
+    <div class="touch-panel__zone">
+      <div class="touch-panel__title">터치 & 드래그 존</div>
+      <div class="touch-panel__hint">
+        여기서 드래그하면 차량을 조종하고,<br />
+        빈 공간을 탭하면 미사일이 발사됩니다!
+      </div>
+    </div>
+  </div>
   <script>
     (function () {
       const canvas = document.getElementById('game');
       const ctx = canvas.getContext('2d');
+      const touchPanel = document.getElementById('touchPanel');
 
       const road = {
         width: canvas.width * 0.6,
@@ -502,9 +565,10 @@
             if (player.bumperLevel > 0) {
               player.bumperLevel -= 1;
               traffic.splice(i, 1);
-              score += Math.floor(car.scoreValue * 0.6);
+              const bumperScore = Math.floor(car.scoreValue * 0.6);
+              score += bumperScore;
               addExplosion(car.x + car.width / 2, car.y + car.height / 2);
-              addScorePopup(car.x + car.width / 2, car.y + car.height / 2 - 10, Math.floor(car.scoreValue * 0.6));
+              addScorePopup(car.x + car.width / 2, car.y + car.height / 2 - 10, bumperScore);
               updateHud();
             } else {
               running = false;
@@ -850,7 +914,7 @@
         }
       }
 
-      canvas.addEventListener('touchstart', function (event) {
+      function onTouchStart(event) {
         event.preventDefault();
         const changed = event.changedTouches;
         for (let i = 0; i < changed.length; i += 1) {
@@ -870,9 +934,9 @@
             fireMissile();
           }
         }
-      }, { passive: false });
+      }
 
-      canvas.addEventListener('touchmove', function (event) {
+      function onTouchMove(event) {
         if (touchState.activeId === null) {
           return;
         }
@@ -896,23 +960,24 @@
             break;
           }
         }
-      }, { passive: false });
+      }
 
-      canvas.addEventListener('touchend', function (event) {
+      function onTouchEnd(event) {
         event.preventDefault();
         const changed = event.changedTouches;
         for (let i = 0; i < changed.length; i += 1) {
           handlePrimaryTouchEnd(changed[i].identifier);
         }
-      }, { passive: false });
+      }
 
-      canvas.addEventListener('touchcancel', function (event) {
-        event.preventDefault();
-        const changed = event.changedTouches;
-        for (let i = 0; i < changed.length; i += 1) {
-          handlePrimaryTouchEnd(changed[i].identifier);
-        }
-      }, { passive: false });
+      [canvas, touchPanel].forEach(function (target) {
+        target.addEventListener('touchstart', onTouchStart, { passive: false });
+        target.addEventListener('touchmove', onTouchMove, { passive: false });
+        target.addEventListener('touchend', onTouchEnd, { passive: false });
+        target.addEventListener('touchcancel', onTouchEnd, { passive: false });
+      });
+
+      restartButton.addEventListener('click', resetGame);
 
       function resizeCanvasDisplay() {
         const scale = Math.min(window.innerWidth / canvas.width, window.innerHeight / canvas.height);
@@ -924,8 +989,6 @@
 
       window.addEventListener('resize', resizeCanvasDisplay);
       window.addEventListener('orientationchange', resizeCanvasDisplay);
-
-      restartButton.addEventListener('click', resetGame);
 
       player.x = laneCenter(1) - player.width / 2;
       initScenery();
